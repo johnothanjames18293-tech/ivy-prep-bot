@@ -102,6 +102,21 @@ export const ticketSetupCommand = {
       ticketData.categoryIds[key] = category.id
     }
 
+    // Create/find the Closed Tickets category
+    const closedCategoryName = "🔒 Closed Tickets"
+    let closedCategory = guild.channels.cache.find(
+      (ch) => ch.type === ChannelType.GuildCategory && ch.name === closedCategoryName
+    ) as CategoryChannel | undefined
+
+    if (!closedCategory) {
+      closedCategory = await guild.channels.create({
+        name: closedCategoryName,
+        type: ChannelType.GuildCategory,
+      })
+    }
+
+    ticketData.categoryIds["closed"] = closedCategory.id
+
     saveTicketData(ticketData)
 
     // Build the ticket panel embed + button
@@ -343,13 +358,12 @@ export async function handleTicketCloseConfirm(interaction: ButtonInteraction) {
 
   await channel.send({ embeds: [closeEmbed] })
 
-  // Remove user send permissions (archive instead of delete)
   try {
+    // Remove send permissions for members (archive instead of delete)
     const overwrites = channel.permissionOverwrites.cache
     for (const [id, overwrite] of overwrites) {
       if (id === channel.guild.id) continue
       if (overwrite.type === 1) {
-        // Member overwrite — remove send, keep view so they can see the archive
         await channel.permissionOverwrites.edit(id, {
           SendMessages: false,
         })
@@ -357,6 +371,13 @@ export async function handleTicketCloseConfirm(interaction: ButtonInteraction) {
     }
 
     await channel.setName(`closed-${channel.name}`)
+
+    // Move to Closed Tickets category
+    const ticketData = loadTicketData()
+    const closedCategoryId = ticketData.categoryIds["closed"]
+    if (closedCategoryId) {
+      await channel.setParent(closedCategoryId, { lockPermissions: false })
+    }
   } catch (error) {
     console.error("[Tickets] Error closing ticket:", error)
   }
