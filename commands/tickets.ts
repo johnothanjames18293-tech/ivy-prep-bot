@@ -347,9 +347,14 @@ export async function handleTicketCloseConfirm(interaction: ButtonInteraction) {
   const channel = interaction.channel as TextChannel
   if (!channel) return
 
+  // Prevent double-closing
+  if (channel.name.startsWith("closed-")) {
+    await interaction.update({ content: "This ticket is already closed.", components: [] })
+    return
+  }
+
   await interaction.update({ content: "🔒 Closing ticket...", components: [] })
 
-  // Create transcript-like closing embed
   const closeEmbed = new EmbedBuilder()
     .setTitle("🔒 Ticket Closed")
     .setDescription(`Closed by <@${interaction.user.id}>`)
@@ -359,12 +364,13 @@ export async function handleTicketCloseConfirm(interaction: ButtonInteraction) {
   await channel.send({ embeds: [closeEmbed] })
 
   try {
-    // Remove send permissions for members (archive instead of delete)
+    // Hide ticket from customers — deny ViewChannel for all member overwrites
     const overwrites = channel.permissionOverwrites.cache
     for (const [id, overwrite] of overwrites) {
       if (id === channel.guild.id) continue
       if (overwrite.type === 1) {
         await channel.permissionOverwrites.edit(id, {
+          ViewChannel: false,
           SendMessages: false,
         })
       }
@@ -390,28 +396,23 @@ export const ticketDeleteCommand = {
     .setDescription("Permanently delete this ticket channel"),
 
   async execute(interaction: ChatInputCommandInteraction) {
-    if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ ephemeral: true })
-    }
-
     const channel = interaction.channel as TextChannel
     if (!channel) {
-      await interaction.editReply("❌ This command can only be used in a channel.")
+      await interaction.reply({ content: "❌ This command can only be used in a channel.", ephemeral: true })
       return
     }
 
     if (!channel.name.includes("ticket")) {
-      await interaction.editReply("❌ This doesn't look like a ticket channel.")
+      await interaction.reply({ content: "❌ This doesn't look like a ticket channel.", ephemeral: true })
       return
     }
 
-    await interaction.editReply("🗑️ Deleting ticket in 3 seconds...")
-    setTimeout(async () => {
-      try {
-        await channel.delete()
-      } catch (error) {
-        console.error("[Tickets] Error deleting ticket:", error)
-      }
-    }, 3000)
+    await interaction.reply({ content: "🗑️ Deleting ticket..." })
+
+    try {
+      await channel.delete("Ticket deleted by staff")
+    } catch (error) {
+      console.error("[Tickets] Error deleting ticket:", error)
+    }
   },
 }
