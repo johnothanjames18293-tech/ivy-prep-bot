@@ -12,6 +12,7 @@ import { presetCommand, loadPresets } from "./commands/preset.js"
 import {
   ticketSetupCommand,
   ticketDeleteCommand,
+  refreshTicketsCommand,
   handleTicketButton,
   handleTicketSelect,
   handleTicketModal,
@@ -77,6 +78,7 @@ client.once("ready", async () => {
       presetCommand.data.toJSON(),
       ticketSetupCommand.data.toJSON(),
       ticketDeleteCommand.data.toJSON(),
+      refreshTicketsCommand.data.toJSON(),
     )
   }
 
@@ -199,6 +201,8 @@ client.on("interactionCreate", async (interaction: Interaction) => {
       await ticketSetupCommand.execute(interaction)
     } else if (interaction.commandName === "deleteticket") {
       await ticketDeleteCommand.execute(interaction)
+    } else if (interaction.commandName === "refreshtickets") {
+      await refreshTicketsCommand.execute(interaction)
     }
     // Server Manager commands
     else if (interaction.commandName === "paymentinfo") {

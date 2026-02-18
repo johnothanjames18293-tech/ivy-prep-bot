@@ -57,7 +57,7 @@ const CATEGORY_NAMES: Record<string, string> = {
 }
 
 // Role names that should always have access to tickets
-const STAFF_ROLE_NAMES = ["owners", "management"]
+const STAFF_ROLE_NAMES = ["owners", "management", "admin"]
 
 async function findOrCreateCategory(guild: any, key: string): Promise<string | undefined> {
   const name = CATEGORY_NAMES[key]
@@ -467,5 +467,61 @@ export const ticketDeleteCommand = {
     } catch (error) {
       console.error("[Tickets] Error deleting ticket:", error)
     }
+  },
+}
+
+// ============ REFRESH TICKETS COMMAND ============
+export const refreshTicketsCommand = {
+  data: new SlashCommandBuilder()
+    .setName("refreshtickets")
+    .setDescription("Update permissions on all existing ticket channels to include current staff roles"),
+
+  async execute(interaction: ChatInputCommandInteraction) {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true })
+    }
+
+    const guild = interaction.guild
+    if (!guild) {
+      await interaction.editReply("❌ This command can only be used in a server.")
+      return
+    }
+
+    await guild.channels.fetch()
+
+    const staffRoleIds = getStaffRoleIds(guild, [])
+    if (staffRoleIds.length === 0) {
+      await interaction.editReply("❌ No staff roles found (Owners, Management, Admin).")
+      return
+    }
+
+    // Find all ticket channels across all ticket categories
+    const ticketChannels = guild.channels.cache.filter(
+      (ch: any) => ch.type === ChannelType.GuildText && ch.name.includes("ticket")
+    )
+
+    let updated = 0
+    for (const [, channel] of ticketChannels) {
+      try {
+        const textChannel = channel as TextChannel
+        for (const roleId of staffRoleIds) {
+          const existing = textChannel.permissionOverwrites.cache.get(roleId)
+          if (!existing) {
+            await textChannel.permissionOverwrites.edit(roleId, {
+              ViewChannel: true,
+              SendMessages: true,
+              ReadMessageHistory: true,
+              AttachFiles: true,
+              ManageMessages: true,
+            })
+          }
+        }
+        updated++
+      } catch (error) {
+        console.error(`[Tickets] Error updating permissions for ${channel.name}:`, error)
+      }
+    }
+
+    await interaction.editReply(`✅ Updated permissions on ${updated} ticket channel(s). Staff roles: ${staffRoleIds.length} roles applied.`)
   },
 }
