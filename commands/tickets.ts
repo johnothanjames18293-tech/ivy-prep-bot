@@ -56,6 +56,9 @@ const CATEGORY_NAMES: Record<string, string> = {
   closed: "🔒 Closed Tickets",
 }
 
+// Role names that should always have access to tickets
+const STAFF_ROLE_NAMES = ["owners", "management"]
+
 async function findOrCreateCategory(guild: any, key: string): Promise<string | undefined> {
   const name = CATEGORY_NAMES[key]
   if (!name) return undefined
@@ -75,6 +78,20 @@ async function findOrCreateCategory(guild: any, key: string): Promise<string | u
   }
 
   return category.id
+}
+
+function getStaffRoleIds(guild: any, savedRoles: string[]): string[] {
+  const roleIds = new Set(savedRoles)
+
+  // Always include well-known staff roles by name
+  for (const name of STAFF_ROLE_NAMES) {
+    const role = guild.roles.cache.find(
+      (r: any) => r.name.toLowerCase() === name
+    )
+    if (role) roleIds.add(role.id)
+  }
+
+  return Array.from(roleIds)
 }
 
 // ============ TICKET SETUP COMMAND ============
@@ -275,7 +292,8 @@ export async function handleTicketModal(interaction: ModalSubmitInteraction) {
     },
   ]
 
-  for (const roleId of ticketData.staffRoles) {
+  const staffRoleIds = getStaffRoleIds(guild, ticketData.staffRoles)
+  for (const roleId of staffRoleIds) {
     permissionOverwrites.push({
       id: roleId,
       allow: [
