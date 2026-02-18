@@ -60,6 +60,9 @@ async function findOrCreateCategory(guild: any, key: string): Promise<string | u
   const name = CATEGORY_NAMES[key]
   if (!name) return undefined
 
+  // Fetch all channels from API to ensure cache is populated
+  await guild.channels.fetch()
+
   let category = guild.channels.cache.find(
     (ch: any) => ch.type === ChannelType.GuildCategory && ch.name === name
   ) as CategoryChannel | undefined
@@ -393,6 +396,7 @@ export async function handleTicketCloseConfirm(interaction: ButtonInteraction) {
     const overwrites = channel.permissionOverwrites.cache
     for (const [id, overwrite] of overwrites) {
       if (id === channel.guild.id) continue
+      // type 1 = member overwrite (not a role)
       if (overwrite.type === 1) {
         await channel.permissionOverwrites.edit(id, {
           ViewChannel: false,
@@ -400,16 +404,23 @@ export async function handleTicketCloseConfirm(interaction: ButtonInteraction) {
         })
       }
     }
+  } catch (error) {
+    console.error("[Tickets] Error updating permissions:", error)
+  }
 
+  try {
     await channel.setName(`closed-${channel.name}`)
+  } catch (error) {
+    console.error("[Tickets] Error renaming channel:", error)
+  }
 
-    // Move to Closed Tickets category (look up by name, survives redeploys)
+  try {
     const closedCategoryId = await findOrCreateCategory(channel.guild, "closed")
     if (closedCategoryId) {
       await channel.setParent(closedCategoryId, { lockPermissions: false })
     }
   } catch (error) {
-    console.error("[Tickets] Error closing ticket:", error)
+    console.error("[Tickets] Error moving to closed category:", error)
   }
 }
 
