@@ -49,6 +49,31 @@ const CATEGORIES: Record<string, string> = {
   other: "Other Prep",
 }
 
+const CATEGORY_NAMES: Record<string, string> = {
+  olympiads: "📁 Olympiads/Competitions",
+  standardized: "📁 Standardized Testing",
+  other: "📁 Other Prep",
+  closed: "🔒 Closed Tickets",
+}
+
+async function findOrCreateCategory(guild: any, key: string): Promise<string | undefined> {
+  const name = CATEGORY_NAMES[key]
+  if (!name) return undefined
+
+  let category = guild.channels.cache.find(
+    (ch: any) => ch.type === ChannelType.GuildCategory && ch.name === name
+  ) as CategoryChannel | undefined
+
+  if (!category) {
+    category = await guild.channels.create({
+      name,
+      type: ChannelType.GuildCategory,
+    })
+  }
+
+  return category.id
+}
+
 // ============ TICKET SETUP COMMAND ============
 export const ticketSetupCommand = {
   data: new SlashCommandBuilder()
@@ -227,8 +252,8 @@ export async function handleTicketModal(interaction: ModalSubmitInteraction) {
   const username = interaction.user.username.toLowerCase()
   const channelName = `${examClean}-ticket${ticketNum}-${username}`
 
-  // Find the category channel
-  const parentId = ticketData.categoryIds[categoryKey]
+  // Find or create the category channel by name
+  const parentId = await findOrCreateCategory(guild, categoryKey)
 
   // Permission overwrites: deny @everyone, allow the user + staff roles
   const permissionOverwrites: any[] = [
@@ -378,9 +403,8 @@ export async function handleTicketCloseConfirm(interaction: ButtonInteraction) {
 
     await channel.setName(`closed-${channel.name}`)
 
-    // Move to Closed Tickets category
-    const ticketData = loadTicketData()
-    const closedCategoryId = ticketData.categoryIds["closed"]
+    // Move to Closed Tickets category (look up by name, survives redeploys)
+    const closedCategoryId = await findOrCreateCategory(channel.guild, "closed")
     if (closedCategoryId) {
       await channel.setParent(closedCategoryId, { lockPermissions: false })
     }
