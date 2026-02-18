@@ -19,6 +19,8 @@ RUN npm ci --omit=dev && npm install tsx typescript @types/node @types/pdfkit
 
 COPY tsconfig.json bot.ts ./
 COPY commands/ ./commands/
+COPY utils/ ./utils/
+COPY lib/ ./lib/
 
 RUN mkdir -p data
 
