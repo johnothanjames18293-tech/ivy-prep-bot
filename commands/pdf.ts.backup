@@ -1,0 +1,198 @@
+import { SlashCommandBuilder, type ChatInputCommandInteraction } from "discord.js"
+import { solveQuestions } from "../utils/question-solver.js"
+import { uploadToCatbox } from "../utils/catbox.js"
+
+// Tmpfiles upload as backup
+async function uploadToTmpfiles(fileBuffer: Buffer, fileName: string): Promise<string> {
+  const FormData = (await import("form-data")).default
+  const fetch = (await import("node-fetch")).default
+  
+  const formData = new FormData()
+  formData.append("file", fileBuffer, fileName)
+
+  const response = await fetch("https://tmpfiles.org/api/v1/upload", {
+    method: "POST",
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error(`Tmpfiles upload failed: ${response.statusText}`)
+  }
+
+  const result = await response.json()
+  const url = (result as any).data.url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+  return url
+}
+
+export const pdfCommand = {
+  data: new SlashCommandBuilder()
+    .setName("pdf")
+    .setDescription("Generate SAT PDF with watermarks from JSON files (up to 10 files)")
+    .addStringOption((option) =>
+      option
+        .setName("watermark")
+        .setDescription("Choose watermark style")
+        .setRequired(true)
+        .addChoices(
+          { name: "Ekonflux", value: "ekon" },
+          { name: "Himan", value: "himan" },
+          { name: "YSL", value: "ysl" },
+          { name: "Zenvex", value: "zenvex" },
+        ),
+    )
+    .addStringOption((option) =>
+      option
+        .setName("solver")
+        .setDescription("Choose solving method")
+        .setRequired(true)
+        .addChoices(
+          { name: "GrokSolver (SWAPI + Grok AI fallback)", value: "groksolver" },
+          { name: "Grok (Grok AI only)", value: "grok" },
+        ),
+    )
+    .addAttachmentOption((option) => option.setName("file1").setDescription("JSON file 1").setRequired(true))
+    .addAttachmentOption((option) => option.setName("file2").setDescription("JSON file 2").setRequired(false))
+    .addAttachmentOption((option) => option.setName("file3").setDescription("JSON file 3").setRequired(false))
+    .addAttachmentOption((option) => option.setName("file4").setDescription("JSON file 4").setRequired(false))
+    .addAttachmentOption((option) => option.setName("file5").setDescription("JSON file 5").setRequired(false))
+    .addAttachmentOption((option) => option.setName("file6").setDescription("JSON file 6").setRequired(false))
+    .addAttachmentOption((option) => option.setName("file7").setDescription("JSON file 7").setRequired(false))
+    .addAttachmentOption((option) => option.setName("file8").setDescription("JSON file 8").setRequired(false))
+    .addAttachmentOption((option) => option.setName("file9").setDescription("JSON file 9").setRequired(false))
+    .addAttachmentOption((option) => option.setName("file10").setDescription("JSON file 10").setRequired(false)),
+
+  async execute(interaction: ChatInputCommandInteraction) {
+    await interaction.deferReply()
+
+    try {
+      const watermarkMode = interaction.options.getString("watermark", true) as "ekon" | "himan" | "ysl" | "zenvex"
+      const solverMode = interaction.options.getString("solver", true) as "groksolver" | "grok"
+
+      const attachments = []
+      for (let i = 1; i <= 10; i++) {
+        const file = interaction.options.getAttachment(`file${i}`)
+        if (file) {
+          if (!file.name.endsWith(".json")) {
+            await interaction.editReply({
+              content: `❌ Error: File ${i} (${file.name}) is not a JSON file. All files must be JSON.`,
+            })
+            return
+          }
+          attachments.push({ file, index: i })
+        }
+      }
+
+      if (attachments.length === 0) {
+        await interaction.editReply({
+          content: "❌ Error: No files uploaded.",
+        })
+        return
+      }
+
+      console.log(`[v0] Processing ${attachments.length} file(s) with solver: ${solverMode}`)
+
+      await interaction.editReply({
+        content: `🔄 Processing ${attachments.length} file(s)... This may take a few minutes.\nSolver: ${solverMode === "groksolver" ? "SWAPI + Grok AI" : "Grok AI only"}`,
+      })
+
+      const pdfLinks = []
+      const errors = []
+
+      for (const { file, index } of attachments) {
+        try {
+          console.log(`[v0] Processing file ${index}: ${file.name}`)
+
+          await interaction.editReply({
+            content: `🔄 Processing file ${index}/${attachments.length}: ${file.name}...\nSolving questions with ${solverMode === "groksolver" ? "SWAPI + Grok AI" : "Grok AI only"}...`,
+          })
+
+          const response = await fetch(file.url)
+          const testData = await response.json()
+
+          console.log(`[v0] Solving questions for file ${index}...`)
+          const solvedTestData = await solveQuestions(testData, solverMode)
+
+          await interaction.editReply({
+            content: `🔄 Processing file ${index}/${attachments.length}: ${file.name}...\nGenerating PDF...`,
+          })
+
+          console.log(`[v0] Generating PDF for file ${index}...`)
+
+          const webAppUrl = process.env.WEB_APP_URL || "http://localhost:3000"
+          const pdfResponse = await fetch(`${webAppUrl}/api/generate-pdf`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              testData: solvedTestData,
+              watermarkMode,
+            }),
+          })
+
+          if (!pdfResponse.ok) {
+            const error = await pdfResponse.json()
+            throw new Error(`PDF generation failed: ${error.error || pdfResponse.statusText}`)
+          }
+
+          const pdfJson = await pdfResponse.json()
+          const pdfBuffer = Buffer.from(pdfJson.pdf, 'base64')
+          console.log(`[v0] PDF ${index} generated successfully! Buffer size: ${pdfBuffer.length} bytes`)
+
+          const originalName = file.name.replace(".json", "")
+          const pdfFileName = `${originalName}-${watermarkMode}-${Date.now()}.pdf`
+          
+          let uploadUrl: string
+          let uploadService: string
+          
+          try {
+            console.log(`[v0] Attempting Catbox upload for PDF ${index}...`)
+            uploadUrl = await uploadToCatbox(pdfBuffer, pdfFileName)
+            uploadService = "Catbox"
+            console.log(`[v0] Catbox upload successful: ${uploadUrl}`)
+          } catch (catboxError) {
+            console.log(`[v0] Catbox failed, falling back to tmpfiles...`)
+            console.error(`[v0] Catbox error:`, catboxError)
+            try {
+              uploadUrl = await uploadToTmpfiles(pdfBuffer, pdfFileName)
+              uploadService = "Tmpfiles"
+              console.log(`[v0] Tmpfiles upload successful: ${uploadUrl}`)
+            } catch (tmpError) {
+              throw new Error(`Both Catbox and Tmpfiles uploads failed`)
+            }
+          }
+
+          pdfLinks.push({ name: originalName, url: uploadUrl, service: uploadService })
+        } catch (error) {
+          console.error(`[v0] Error processing file ${index}:`, error)
+          errors.push(`File ${index} (${file.name}): ${error instanceof Error ? error.message : "Unknown error"}`)
+        }
+      }
+
+      if (pdfLinks.length > 0) {
+        let message = `✅ Successfully generated ${pdfLinks.length} PDF(s)! (Watermark: ${watermarkMode}, Solver: ${solverMode === "groksolver" ? "SWAPI + Grok AI" : "Grok AI only"})\n\n`
+        
+        message += pdfLinks.map((link, i) => `${i + 1}. **${link.name}** (${link.service})\n${link.url}`).join("\n\n")
+
+        if (errors.length > 0) {
+          message += `\n\n⚠️ ${errors.length} file(s) failed:\n${errors.join("\n")}`
+        }
+
+        await interaction.editReply({
+          content: message,
+        })
+
+        console.log(`[v0] ${pdfLinks.length} PDF link(s) sent to Discord!`)
+      } else {
+        await interaction.editReply({
+          content: `❌ All files failed to process:\n${errors.join("\n")}`,
+        })
+      }
+    } catch (error) {
+      console.error("[v0] Error in pdf command:", error)
+      await interaction.editReply({
+        content: `❌ Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      })
+    }
+  },
+}

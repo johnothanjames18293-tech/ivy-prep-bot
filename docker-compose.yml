@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    container_name: ivy-prep-tutor
+    restart: always
+    env_file: .env
+    environment:
+      - BOT=clover
+    volumes:
+      - ./data:/app/data
