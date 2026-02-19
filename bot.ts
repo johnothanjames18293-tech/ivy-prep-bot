@@ -160,7 +160,7 @@ client.on("interactionCreate", async (interaction: Interaction) => {
   // Role restriction for Clover bot
   if (bot === "clover" && interaction.guild) {
     const publicCommands = ["paymentinfo"]
-    const managementCommands = ["watermark", "paid", "paymentinfo"]
+    const managementCommands = ["watermark", "paid", "paymentinfo", "givevouch"]
 
     if (!publicCommands.includes(interaction.commandName)) {
       const member = interaction.guild.members.cache.get(interaction.user.id)
