@@ -157,17 +157,26 @@ client.on("interactionCreate", async (interaction: Interaction) => {
 
   if (!interaction.isChatInputCommand()) return
 
-  // Owner role restriction for Clover bot (exempt: paymentinfo is public)
+  // Role restriction for Clover bot
   if (bot === "clover" && interaction.guild) {
     const publicCommands = ["paymentinfo"]
+    const managementCommands = ["watermark", "paid", "paymentinfo"]
+
     if (!publicCommands.includes(interaction.commandName)) {
       const member = interaction.guild.members.cache.get(interaction.user.id)
         || await interaction.guild.members.fetch(interaction.user.id).catch(() => null)
+
       const hasOwner = member?.roles.cache.some(
         (role) => role.name.toLowerCase() === "owners"
       )
-      if (!hasOwner) {
-        await interaction.reply({ content: "❌ Only users with the **Owners** role can use this bot.", ephemeral: true })
+      const hasManagement = member?.roles.cache.some(
+        (role) => role.name.toLowerCase() === "management"
+      )
+
+      if (hasManagement && managementCommands.includes(interaction.commandName)) {
+        // Management can use these specific commands — allow through
+      } else if (!hasOwner) {
+        await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true })
         return
       }
     }
