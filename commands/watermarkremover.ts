@@ -132,7 +132,7 @@ async function processImage(buffer: Buffer, apiKey: string): Promise<Buffer> {
   console.log("[Watermark Remover] Calling Replicate LAMA...")
 
   const output = await replicate.run(
-    "allenhooo/lama",
+    "allenhooo/lama:cdac78a1bec5b23c07fd29692fb70baa513ea403a39e643c48ec5edadb15fe72",
     { input: { image: imageDataUri, mask: maskDataUri } }
   )
 
