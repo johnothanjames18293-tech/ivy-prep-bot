@@ -13,6 +13,19 @@ import { promisify } from "util"
 
 const execAsync = promisify(exec)
 
+type Region = "full" | "top" | "center" | "bottom" | "top_half" | "bottom_half"
+
+function getRegionBounds(width: number, height: number, region: Region): { startY: number; endY: number } {
+  switch (region) {
+    case "top": return { startY: 0, endY: Math.floor(height / 3) }
+    case "center": return { startY: Math.floor(height / 3), endY: Math.floor((height * 2) / 3) }
+    case "bottom": return { startY: Math.floor((height * 2) / 3), endY: height }
+    case "top_half": return { startY: 0, endY: Math.floor(height / 2) }
+    case "bottom_half": return { startY: Math.floor(height / 2), endY: height }
+    default: return { startY: 0, endY: height }
+  }
+}
+
 export const watermarkremoverCommand = {
   data: new SlashCommandBuilder()
     .setName("watermarkremover")
@@ -47,6 +60,20 @@ export const watermarkremoverCommand = {
           { name: "Medium (recommended)", value: "medium" },
           { name: "Aggressive (removes more)", value: "aggressive" }
         )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("region")
+        .setDescription("Limit removal to a specific area of the image")
+        .setRequired(false)
+        .addChoices(
+          { name: "Full page (default)", value: "full" },
+          { name: "Top third", value: "top" },
+          { name: "Center third", value: "center" },
+          { name: "Bottom third", value: "bottom" },
+          { name: "Top half", value: "top_half" },
+          { name: "Bottom half", value: "bottom_half" }
+        )
     ),
 
   async execute(interaction: ChatInputCommandInteraction) {
@@ -59,8 +86,9 @@ export const watermarkremoverCommand = {
       const attachment = interaction.options.getAttachment("file")!
       const intensity = (interaction.options.getString("intensity") || "medium") as "light" | "medium" | "aggressive"
       const watermarkColor = (interaction.options.getString("color") || "gray") as "gray" | "red" | "blue" | "green" | "yellow" | "all"
+      const region = (interaction.options.getString("region") || "full") as "full" | "top" | "center" | "bottom" | "top_half" | "bottom_half"
 
-      console.log(`[Watermark Remover] Starting - file: ${attachment.name}, intensity: ${intensity}, color: ${watermarkColor}`)
+      console.log(`[Watermark Remover] Starting - file: ${attachment.name}, intensity: ${intensity}, color: ${watermarkColor}, region: ${region}`)
 
       if (!attachment.url) {
         await interaction.editReply("❌ Invalid file")
@@ -96,7 +124,7 @@ export const watermarkremoverCommand = {
           await interaction.editReply({
             content: `🔄 Converting PDF pages to images and processing... This may take a while for large PDFs.`,
           })
-          cleanedBuffer = await removeWatermarkFromPDF(buffer, intensity, watermarkColor)
+          cleanedBuffer = await removeWatermarkFromPDF(buffer, intensity, watermarkColor, region)
           console.log("[Watermark Remover] PDF processed successfully!")
         } catch (pdfError: any) {
           console.error("[Watermark Remover] PDF processing failed:", pdfError.message)
@@ -112,7 +140,7 @@ export const watermarkremoverCommand = {
           await interaction.editReply({
             content: `🔄 Processing video... This may take several minutes depending on video length.`,
           })
-          cleanedBuffer = await removeWatermarkFromVideo(buffer, intensity, watermarkColor, ext, async (progress: string) => {
+          cleanedBuffer = await removeWatermarkFromVideo(buffer, intensity, watermarkColor, ext, region, async (progress: string) => {
             try {
               await interaction.editReply({ content: `🔄 ${progress}` })
             } catch (e) {
@@ -166,7 +194,7 @@ export const watermarkremoverCommand = {
           } catch (apiError: any) {
             console.error("[Watermark Remover] API failed for image:", apiError.message)
             console.log("[Watermark Remover] Falling back to local processing...")
-            cleanedBuffer = await removeWatermarkFromImage(buffer, intensity, watermarkColor)
+            cleanedBuffer = await removeWatermarkFromImage(buffer, intensity, watermarkColor, region)
           }
         }
       } else {
@@ -177,7 +205,7 @@ export const watermarkremoverCommand = {
         } catch (apiError: any) {
           console.error("[Watermark Remover] API failed:", apiError.message)
           try {
-            cleanedBuffer = await removeWatermarkFromImage(buffer, intensity, watermarkColor)
+            cleanedBuffer = await removeWatermarkFromImage(buffer, intensity, watermarkColor, region)
           } catch (error) {
             await interaction.editReply({
               content: `❌ Unsupported file format: ${ext}. Supported formats: PDF, PNG, JPG, JPEG, WEBP, GIF, BMP, TIFF, MP4, MOV, AVI, WEBM, MKV`,
@@ -705,7 +733,8 @@ async function processLargePDF(
 async function removeWatermarkFromPDF(
   buffer: Buffer,
   intensity: "light" | "medium" | "aggressive",
-  watermarkColor: "gray" | "red" | "blue" | "green" | "yellow" | "all" = "gray"
+  watermarkColor: "gray" | "red" | "blue" | "green" | "yellow" | "all" = "gray",
+  region: Region = "full"
 ): Promise<Buffer> {
   console.log("[Watermark Remover] Converting PDF pages to images using pdf-to-png-converter...")
   
@@ -742,7 +771,7 @@ async function removeWatermarkFromPDF(
       console.log(`[Watermark Remover] Page ${pageNum} converted (${imageBuffer.length} bytes)`)
       
       // Process the image to remove watermark
-      const processedImage = await removeWatermarkFromImage(Buffer.from(imageBuffer), intensity, watermarkColor)
+      const processedImage = await removeWatermarkFromImage(Buffer.from(imageBuffer), intensity, watermarkColor, region)
       
       // Get image dimensions
       const metadata = await sharp(processedImage).metadata()
@@ -782,6 +811,7 @@ async function removeWatermarkFromVideo(
   intensity: "light" | "medium" | "aggressive",
   watermarkColor: "gray" | "red" | "blue" | "green" | "yellow" | "all",
   ext: string,
+  region: Region = "full",
   onProgress?: (progress: string) => Promise<void>
 ): Promise<Buffer> {
   console.log("[Watermark Remover] Starting video watermark removal...")
@@ -865,7 +895,7 @@ async function removeWatermarkFromVideo(
         const frameBuffer = fs.readFileSync(framePath)
         
         // Process frame to remove watermark
-        const processedBuffer = await removeWatermarkFromImage(frameBuffer, intensity, watermarkColor)
+        const processedBuffer = await removeWatermarkFromImage(frameBuffer, intensity, watermarkColor, region)
         
         // Write processed frame
         fs.writeFileSync(outputFramePath, processedBuffer)
@@ -920,9 +950,10 @@ async function removeWatermarkFromVideo(
 async function removeWatermarkFromImage(
   buffer: Buffer,
   intensity: "light" | "medium" | "aggressive",
-  watermarkColor: "gray" | "red" | "blue" | "green" | "yellow" | "all" = "gray"
+  watermarkColor: "gray" | "red" | "blue" | "green" | "yellow" | "all" = "gray",
+  region: Region = "full"
 ): Promise<Buffer> {
-  console.log(`[Watermark Remover] removeWatermarkFromImage called - buffer size: ${buffer.length}, intensity: ${intensity}`)
+  console.log(`[Watermark Remover] removeWatermarkFromImage called - buffer size: ${buffer.length}, intensity: ${intensity}, region: ${region}`)
   
   // Verify we have a valid image buffer
   try {
@@ -938,9 +969,8 @@ async function removeWatermarkFromImage(
   if (replicateApiKey) {
     try {
       console.log("[Watermark Remover] Trying Replicate AI...")
-      const result = await removeWatermarkWithAI(buffer, replicateApiKey, intensity)
+      const result = await removeWatermarkWithAI(buffer, replicateApiKey, intensity, region)
       console.log("[Watermark Remover] Replicate succeeded!")
-      // Ensure PNG format for pdf-lib compatibility
       return await sharp(result).png().toBuffer()
     } catch (error: any) {
       console.error("[Watermark Remover] Replicate failed:", error.message, error.stack)
@@ -951,15 +981,15 @@ async function removeWatermarkFromImage(
   
   // Use improved local processing
   console.log("[Watermark Remover] Using improved local processing...")
-  const localResult = await removeWatermarkImproved(buffer, intensity)
-  // Ensure PNG format
+  const localResult = await removeWatermarkImproved(buffer, intensity, region)
   return await sharp(localResult).png().toBuffer()
 }
 
 async function removeWatermarkWithAI(
   buffer: Buffer,
   apiKey: string,
-  intensity: "light" | "medium" | "aggressive"
+  intensity: "light" | "medium" | "aggressive",
+  region: Region = "full"
 ): Promise<Buffer> {
   console.log("[Watermark Remover] removeWatermarkWithAI called")
   
@@ -982,7 +1012,8 @@ async function removeWatermarkWithAI(
   const imageDataUri = `data:image/png;base64,${imageBase64}`
   
   // Create watermark mask
-  console.log("[Watermark Remover] Creating watermark mask...")
+  const { startY, endY } = getRegionBounds(width, height, region)
+  console.log(`[Watermark Remover] Creating watermark mask (region: ${region}, rows ${startY}-${endY})...`)
   
   const { data } = await sharp(pngBuffer)
     .removeAlpha()
@@ -991,10 +1022,11 @@ async function removeWatermarkWithAI(
   
   const maskData = Buffer.alloc(width * height)
   
-  // IMPORTANT: Detect light gray watermark pixels while preserving dark text
-  // Watermarks are typically light gray (brightness 140-250)
-  // Regular text is DARK (brightness < 120) - DO NOT mask dark pixels!
   for (let i = 0; i < width * height; i++) {
+    const y = Math.floor(i / width)
+    // Skip pixels outside the selected region
+    if (y < startY || y >= endY) continue
+
     const r = data[i * 3]
     const g = data[i * 3 + 1]
     const b = data[i * 3 + 2]
@@ -1004,7 +1036,6 @@ async function removeWatermarkWithAI(
     const minChannel = Math.min(r, g, b)
     const colorVariation = maxChannel - minChannel
     
-    // Target light gray pixels (watermarks), preserve dark text
     const isGray = colorVariation < 35
     const minBrightness = intensity === "aggressive" ? 140 : intensity === "medium" ? 155 : 175
     const maxBrightness = intensity === "aggressive" ? 252 : intensity === "medium" ? 250 : 245
@@ -1104,13 +1135,16 @@ async function removeWatermarkHuggingFace(
 
 async function removeWatermarkImproved(
   buffer: Buffer,
-  intensity: "light" | "medium" | "aggressive"
+  intensity: "light" | "medium" | "aggressive",
+  region: Region = "full"
 ): Promise<Buffer> {
-  console.log("[Watermark Remover] Using improved local watermark removal...")
+  console.log(`[Watermark Remover] Using improved local watermark removal (region: ${region})...`)
   
   const metadata = await sharp(buffer).metadata()
   const width = metadata.width!
   const height = metadata.height!
+  
+  const { startY, endY } = getRegionBounds(width, height, region)
   
   // Get raw pixel data
   const { data } = await sharp(buffer)
@@ -1120,11 +1154,6 @@ async function removeWatermarkImproved(
   
   const processedData = Buffer.from(data)
   
-  // IMPORTANT: Target light gray watermark pixels while preserving dark text
-  // Watermarks are typically light gray (brightness 150-245)
-  // Regular text is DARK (brightness < 120) - must preserve!
-  
-  // Thresholds - target light gray watermarks, preserve dark text
   const config = {
     light: { minBrightness: 180, maxBrightness: 245, colorTolerance: 20 },
     medium: { minBrightness: 160, maxBrightness: 250, colorTolerance: 25 },
@@ -1133,14 +1162,15 @@ async function removeWatermarkImproved(
   
   let replaced = 0
   
-  // Only replace pixels that are LIGHT gray (watermarks), preserve dark text
   for (let i = 0; i < width * height; i++) {
+    const y = Math.floor(i / width)
+    if (y < startY || y >= endY) continue
+
     const r = data[i * 3]
     const g = data[i * 3 + 1]
     const b = data[i * 3 + 2]
     const brightness = (r + g + b) / 3
     
-    // Check if it's grayish (R ≈ G ≈ B)
     const maxC = Math.max(r, g, b)
     const minC = Math.min(r, g, b)
     const isGray = (maxC - minC) < config.colorTolerance
