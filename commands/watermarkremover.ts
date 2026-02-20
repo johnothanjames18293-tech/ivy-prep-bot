@@ -51,13 +51,16 @@ export const watermarkremoverCommand = {
 
       if (ext === ".pdf") {
         await interaction.editReply({ content: `🔄 Converting PDF pages...` })
-        cleanedBuffer = await processPDF(buffer, apiKey, async (page, total) => {
+        cleanedBuffer = await processPDF(buffer, apiKey, async (page, total, pass) => {
           try {
-            await interaction.editReply({ content: `🔄 Processing page ${page}/${total}...` })
+            await interaction.editReply({ content: `🔄 Page ${page}/${total} — pass ${pass}/2...` })
           } catch {}
         })
       } else if ([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"].includes(ext)) {
+        await interaction.editReply({ content: `🔄 Removing watermark (pass 1/2)...` })
         cleanedBuffer = await processImage(buffer, apiKey)
+        await interaction.editReply({ content: `🔄 Cleaning up (pass 2/2)...` })
+        cleanedBuffer = await processImage(cleanedBuffer, apiKey)
       } else {
         await interaction.editReply({ content: `❌ Unsupported format: ${ext}. Use PDF, PNG, JPG, or WEBP.` })
         return
@@ -138,45 +141,77 @@ async function removeWatermarkViaLightPDF(imageBuffer: Buffer, apiKey: string): 
   throw new Error("LightPDF processing timed out after 60s")
 }
 
+/**
+ * Pre-process image to boost watermark visibility for better AI detection.
+ * Increases contrast of semi-transparent/light watermark elements.
+ */
+async function enhanceForWatermarkDetection(buffer: Buffer): Promise<Buffer> {
+  return sharp(buffer)
+    .normalize()
+    .sharpen({ sigma: 1.5 })
+    .modulate({ brightness: 1.05, saturation: 1.2 })
+    .png()
+    .toBuffer()
+}
+
 async function processImage(buffer: Buffer, apiKey: string): Promise<Buffer> {
   const metadata = await sharp(buffer).metadata()
   console.log(`[Watermark Remover] Image: ${metadata.width}x${metadata.height}`)
 
-  const resultBuffer = await removeWatermarkViaLightPDF(buffer, apiKey)
+  const enhanced = await enhanceForWatermarkDetection(buffer)
+  const resultBuffer = await removeWatermarkViaLightPDF(enhanced, apiKey)
   return await sharp(resultBuffer).png().toBuffer()
 }
 
 async function processPDF(
   buffer: Buffer,
   apiKey: string,
-  onProgress?: (page: number, total: number) => Promise<void>
+  onProgress?: (page: number, total: number, pass: number) => Promise<void>
 ): Promise<Buffer> {
   const pngPages = await pdfToPng(buffer as unknown as ArrayBuffer, {
     disableFontFace: true,
     useSystemFonts: true,
-    viewportScale: 1.5,
+    viewportScale: 2.0,
   })
 
   if (!pngPages || pngPages.length === 0) throw new Error("PDF has no pages or failed to convert")
 
   console.log(`[Watermark Remover] PDF: ${pngPages.length} pages`)
 
-  // Process 2 pages at a time (LightPDF QPS limit is 2)
   const processedImages: (Buffer | null)[] = new Array(pngPages.length).fill(null)
 
+  // Pass 1: initial watermark removal
   for (let i = 0; i < pngPages.length; i += 2) {
     const batch = pngPages.slice(i, i + 2)
-    await onProgress?.(i + 1, pngPages.length)
+    await onProgress?.(i + 1, pngPages.length, 1)
 
     const results = await Promise.all(
       batch.map(async (page, j) => {
         const idx = i + j
-        console.log(`[Watermark Remover] Page ${idx + 1}/${pngPages.length}...`)
+        console.log(`[Watermark Remover] Pass 1 — Page ${idx + 1}/${pngPages.length}...`)
         if (!page.content || page.content.length === 0) return null
         return processImage(Buffer.from(page.content), apiKey)
       })
     )
     results.forEach((r, j) => { processedImages[i + j] = r })
+  }
+
+  // Pass 2: clean up remaining artifacts
+  for (let i = 0; i < processedImages.length; i += 2) {
+    const batch = processedImages.slice(i, i + 2)
+    await onProgress?.(i + 1, pngPages.length, 2)
+
+    const results = await Promise.all(
+      batch.map(async (img, j) => {
+        const idx = i + j
+        if (!img) return null
+        console.log(`[Watermark Remover] Pass 2 — Page ${idx + 1}/${pngPages.length}...`)
+        return removeWatermarkViaLightPDF(img, apiKey)
+      })
+    )
+    results.forEach((r, j) => {
+      if (r) processedImages[i + j] = r
+    })
   }
 
   const newPdf = await PDFDocument.create()
@@ -188,7 +223,7 @@ async function processPDF(
     const w = metadata.width || 612
     const h = metadata.height || 792
 
-    const pdfImage = await newPdf.embedPng(processedImage)
+    const pdfImage = await newPdf.embedPng(await sharp(processedImage).png().toBuffer())
     const page = newPdf.addPage([w / 2, h / 2])
     page.drawImage(pdfImage, { x: 0, y: 0, width: w / 2, height: h / 2 })
   }
