@@ -131,10 +131,24 @@ async function processImage(buffer: Buffer, apiKey: string): Promise<Buffer> {
 
   console.log("[Watermark Remover] Calling Replicate LAMA...")
 
-  const output = await replicate.run(
-    "allenhooo/lama:cdac78a1bec5b23c07fd29692fb70baa513ea403a39e643c48ec5edadb15fe72",
-    { input: { image: imageDataUri, mask: maskDataUri } }
-  )
+  let output: any
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      output = await replicate.run(
+        "allenhooo/lama:cdac78a1bec5b23c07fd29692fb70baa513ea403a39e643c48ec5edadb15fe72",
+        { input: { image: imageDataUri, mask: maskDataUri } }
+      )
+      break
+    } catch (err: any) {
+      if (err.message?.includes("429") && attempt < 2) {
+        const wait = (err.message.match(/retry_after.*?(\d+)/)?.[1] || 12) * 1000
+        console.log(`[Watermark Remover] Rate limited, retrying in ${wait / 1000}s...`)
+        await new Promise((r) => setTimeout(r, wait))
+        continue
+      }
+      throw err
+    }
+  }
 
   console.log("[Watermark Remover] Replicate output type:", typeof output, output?.constructor?.name)
 
