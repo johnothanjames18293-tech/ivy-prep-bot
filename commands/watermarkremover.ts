@@ -3,8 +3,10 @@ import { PDFDocument } from "pdf-lib"
 import sharp from "sharp"
 import fetch from "node-fetch"
 import path from "path"
-import Replicate from "replicate"
 import { pdfToPng } from "pdf-to-png-converter"
+import FormData from "form-data"
+
+const LIGHTPDF_API_BASE = "https://techhk.aoscdn.com/api/tasks/visual/external/watermark-remove"
 
 export const watermarkremoverCommand = {
   data: new SlashCommandBuilder()
@@ -23,9 +25,9 @@ export const watermarkremoverCommand = {
         await interaction.deferReply()
       }
 
-      const replicateApiKey = process.env.REPLICATE_API_TOKEN
-      if (!replicateApiKey) {
-        await interaction.editReply("❌ Watermark removal is not configured. Ask an admin to add `REPLICATE_API_TOKEN`.")
+      const apiKey = process.env.LIGHTPDF_API_KEY
+      if (!apiKey) {
+        await interaction.editReply("❌ Watermark removal is not configured. Ask an admin to add `LIGHTPDF_API_KEY`.")
         return
       }
 
@@ -49,9 +51,9 @@ export const watermarkremoverCommand = {
 
       if (ext === ".pdf") {
         await interaction.editReply({ content: `🔄 Processing PDF pages... This may take a moment.` })
-        cleanedBuffer = await processPDF(buffer, replicateApiKey)
+        cleanedBuffer = await processPDF(buffer, apiKey)
       } else if ([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"].includes(ext)) {
-        cleanedBuffer = await processImage(buffer, replicateApiKey)
+        cleanedBuffer = await processImage(buffer, apiKey)
       } else {
         await interaction.editReply({ content: `❌ Unsupported format: ${ext}. Use PDF, PNG, JPG, or WEBP.` })
         return
@@ -81,89 +83,62 @@ export const watermarkremoverCommand = {
   },
 }
 
+async function removeWatermarkViaLightPDF(imageBuffer: Buffer, apiKey: string): Promise<Buffer> {
+  const pngBuffer = await sharp(imageBuffer).png().toBuffer()
+
+  const form = new FormData()
+  form.append("file", pngBuffer, { filename: "image.png", contentType: "image/png" })
+  form.append("sync", "0")
+
+  console.log("[Watermark Remover] Creating LightPDF task...")
+  const createRes = await fetch(LIGHTPDF_API_BASE, {
+    method: "POST",
+    headers: { "X-API-KEY": apiKey },
+    body: form as any,
+  })
+
+  const createJson = (await createRes.json()) as any
+  if (createJson.status !== 200 || !createJson.data?.task_id) {
+    throw new Error(`LightPDF task creation failed: ${createJson.message || JSON.stringify(createJson)}`)
+  }
+
+  const taskId = createJson.data.task_id
+  console.log(`[Watermark Remover] Task created: ${taskId}, polling...`)
+
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 1000))
+
+    const pollRes = await fetch(`${LIGHTPDF_API_BASE}/${taskId}`, {
+      headers: { "X-API-KEY": apiKey },
+    })
+    const pollJson = (await pollRes.json()) as any
+
+    if (pollJson.status !== 200) {
+      throw new Error(`LightPDF polling error: ${pollJson.message || JSON.stringify(pollJson)}`)
+    }
+
+    const { state } = pollJson.data
+    if (state === 1) {
+      const resultUrl = pollJson.data.file
+      if (!resultUrl) throw new Error("LightPDF returned no file URL")
+      console.log("[Watermark Remover] Done, downloading result...")
+      const resultRes = await fetch(resultUrl)
+      if (!resultRes.ok) throw new Error(`Failed to download result: ${resultRes.status}`)
+      return Buffer.from(await resultRes.arrayBuffer())
+    }
+    if (state < 0) {
+      throw new Error(`LightPDF processing failed (state: ${state})`)
+    }
+  }
+
+  throw new Error("LightPDF processing timed out after 60s")
+}
+
 async function processImage(buffer: Buffer, apiKey: string): Promise<Buffer> {
-  const replicate = new Replicate({ auth: apiKey })
+  const metadata = await sharp(buffer).metadata()
+  console.log(`[Watermark Remover] Image: ${metadata.width}x${metadata.height}`)
 
-  const pngBuffer = await sharp(buffer).png().toBuffer()
-  const metadata = await sharp(pngBuffer).metadata()
-  const width = metadata.width!
-  const height = metadata.height!
-
-  console.log(`[Watermark Remover] Image: ${width}x${height}`)
-
-  const imageDataUri = `data:image/png;base64,${pngBuffer.toString("base64")}`
-
-  // Build a mask of likely watermark pixels (light gray, semi-transparent looking)
-  const { data } = await sharp(pngBuffer).removeAlpha().raw().toBuffer({ resolveWithObject: true })
-  const maskData = Buffer.alloc(width * height)
-
-  for (let i = 0; i < width * height; i++) {
-    const r = data[i * 3]
-    const g = data[i * 3 + 1]
-    const b = data[i * 3 + 2]
-    const brightness = (r + g + b) / 3
-    const colorVariation = Math.max(r, g, b) - Math.min(r, g, b)
-
-    // Light gray pixels in the watermark brightness range
-    const isWatermark = colorVariation < 35 && brightness >= 150 && brightness <= 250
-    maskData[i] = isWatermark ? 255 : 0
-  }
-
-  // Dilate the mask slightly to catch edges
-  const dilatedMask = Buffer.alloc(width * height)
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      const idx = y * width + x
-      let found = maskData[idx] > 0
-      if (!found) {
-        for (let dy = -1; dy <= 1 && !found; dy++) {
-          for (let dx = -1; dx <= 1 && !found; dx++) {
-            if (maskData[(y + dy) * width + (x + dx)] > 0) found = true
-          }
-        }
-      }
-      dilatedMask[idx] = found ? 255 : 0
-    }
-  }
-
-  const maskBuffer = await sharp(dilatedMask, { raw: { width, height, channels: 1 } }).png().toBuffer()
-  const maskDataUri = `data:image/png;base64,${maskBuffer.toString("base64")}`
-
-  console.log("[Watermark Remover] Calling Replicate LAMA...")
-
-  let output: any
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      output = await replicate.run(
-        "allenhooo/lama:cdac78a1bec5b23c07fd29692fb70baa513ea403a39e643c48ec5edadb15fe72",
-        { input: { image: imageDataUri, mask: maskDataUri } }
-      )
-      break
-    } catch (err: any) {
-      if (err.message?.includes("429") && attempt < 2) {
-        const wait = (err.message.match(/retry_after.*?(\d+)/)?.[1] || 12) * 1000
-        console.log(`[Watermark Remover] Rate limited, retrying in ${wait / 1000}s...`)
-        await new Promise((r) => setTimeout(r, wait))
-        continue
-      }
-      throw err
-    }
-  }
-
-  console.log("[Watermark Remover] Replicate output type:", typeof output, output?.constructor?.name)
-
-  // FileOutput.toString() reliably returns the URL string
-  const resultUrl = String(output)
-  if (!resultUrl.startsWith("http")) {
-    console.error("[Watermark Remover] Unexpected output:", resultUrl.substring(0, 200))
-    throw new Error("Replicate did not return a valid URL")
-  }
-
-  console.log("[Watermark Remover] Downloading result from:", resultUrl.substring(0, 80))
-  const resultResponse = await fetch(resultUrl)
-  if (!resultResponse.ok) throw new Error(`Failed to download result: ${resultResponse.status}`)
-  const resultBuffer = Buffer.from(await resultResponse.arrayBuffer())
-
+  const resultBuffer = await removeWatermarkViaLightPDF(buffer, apiKey)
   return await sharp(resultBuffer).png().toBuffer()
 }
 
