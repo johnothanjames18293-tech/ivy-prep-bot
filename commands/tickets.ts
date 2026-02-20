@@ -77,7 +77,7 @@ async function findOrCreateCategory(guild: any, key: string): Promise<string | u
     })
   }
 
-  return category.id
+  return category!.id
 }
 
 function getStaffRoleIds(guild: any, savedRoles: string[]): string[] {

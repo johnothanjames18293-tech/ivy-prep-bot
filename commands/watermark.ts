@@ -184,7 +184,7 @@ export const watermarkCommand = {
         } else {
           logoBuffer = await (logoResponse as any).buffer()
         }
-        logoBuffer = await sharp(logoBuffer)
+        logoBuffer = await sharp(logoBuffer!)
           .resize({ width: 1500, height: 1500, fit: "inside", withoutEnlargement: true })
           .png()
           .toBuffer()

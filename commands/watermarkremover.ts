@@ -136,17 +136,21 @@ async function processImage(buffer: Buffer, apiKey: string): Promise<Buffer> {
     { input: { image: imageDataUri, mask: maskDataUri } }
   )
 
-  let resultUrl: string
-  if (typeof output === "string") resultUrl = output
-  else if (Array.isArray(output) && output.length > 0) resultUrl = output[0]
-  else if (output && typeof output === "object" && "output" in output) resultUrl = (output as any).output
-  else throw new Error("Unexpected Replicate output format")
+  console.log("[Watermark Remover] Replicate output type:", typeof output, output?.constructor?.name)
 
+  // FileOutput.toString() reliably returns the URL string
+  const resultUrl = String(output)
+  if (!resultUrl.startsWith("http")) {
+    console.error("[Watermark Remover] Unexpected output:", resultUrl.substring(0, 200))
+    throw new Error("Replicate did not return a valid URL")
+  }
+
+  console.log("[Watermark Remover] Downloading result from:", resultUrl.substring(0, 80))
   const resultResponse = await fetch(resultUrl)
   if (!resultResponse.ok) throw new Error(`Failed to download result: ${resultResponse.status}`)
+  const resultBuffer = Buffer.from(await resultResponse.arrayBuffer())
 
-  const resultArrayBuffer = await resultResponse.arrayBuffer()
-  return await sharp(Buffer.from(resultArrayBuffer)).png().toBuffer()
+  return await sharp(resultBuffer).png().toBuffer()
 }
 
 async function processPDF(buffer: Buffer, apiKey: string): Promise<Buffer> {

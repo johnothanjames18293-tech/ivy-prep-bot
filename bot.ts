@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, REST, Routes, type Interaction } from "discord.js"
+import { Client, GatewayIntentBits, REST, Routes, MessageFlags, type Interaction } from "discord.js"
 import dotenv from "dotenv"
 import { pdfCommand, expireCommand } from "./commands/pdf.js"
 import { doneCommand } from "./commands/done.js"
@@ -99,7 +99,17 @@ client.once("ready", async () => {
   }
 })
 
+client.on("debug", (msg) => {
+  if (msg.includes("Heartbeat") || msg.includes("Session")) {
+    console.log(`[Gateway Debug] ${msg.substring(0, 120)}`)
+  }
+})
+
+client.on("warn", (msg) => console.warn(`[Gateway Warn] ${msg}`))
+client.on("error", (err) => console.error(`[Gateway Error]`, err))
+
 client.on("interactionCreate", async (interaction: Interaction) => {
+  console.log(`[Bot] >>> Interaction received: type=${interaction.type} id=${interaction.id}`)
   // Handle autocomplete for preset selection
   if (interaction.isAutocomplete()) {
     const focused = interaction.options.getFocused(true)
@@ -157,6 +167,25 @@ client.on("interactionCreate", async (interaction: Interaction) => {
 
   if (!interaction.isChatInputCommand()) return
 
+  console.log(`[Bot] Received command: ${interaction.commandName} from ${interaction.user.tag}`)
+
+  // Defer with timeout — another deployment may race us
+  const ephemeralCommands = ["preset", "logs", "unbind", "setlogs"]
+  const isEphemeral = ephemeralCommands.includes(interaction.commandName)
+  try {
+    const deferPromise = interaction.deferReply(isEphemeral ? { flags: MessageFlags.Ephemeral } : {})
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("DEFER_TIMEOUT")), 3000)
+    )
+    await Promise.race([deferPromise, timeoutPromise])
+    console.log(`[Bot] Deferred reply for ${interaction.commandName}`)
+  } catch (e: any) {
+    console.log(`[Bot] Defer issue for ${interaction.commandName}: ${e.code || e.message}`)
+    if (e.code === 10062) return
+    // Force deferred state so editReply works — another deployment already acknowledged
+    ;(interaction as any).deferred = true
+  }
+
   // Role restriction for Clover bot
   if (bot === "clover" && interaction.guild) {
     const publicCommands = ["paymentinfo"]
@@ -176,7 +205,7 @@ client.on("interactionCreate", async (interaction: Interaction) => {
       if (hasManagement && managementCommands.includes(interaction.commandName)) {
         // Management can use these specific commands — allow through
       } else if (!hasOwner) {
-        await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true })
+        await interaction.editReply({ content: "❌ You don't have permission to use this command." })
         return
       }
     }
