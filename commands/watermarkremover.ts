@@ -50,8 +50,12 @@ export const watermarkremoverCommand = {
       let cleanedBuffer: Buffer
 
       if (ext === ".pdf") {
-        await interaction.editReply({ content: `🔄 Processing PDF pages... This may take a moment.` })
-        cleanedBuffer = await processPDF(buffer, apiKey)
+        await interaction.editReply({ content: `🔄 Converting PDF pages...` })
+        cleanedBuffer = await processPDF(buffer, apiKey, async (page, total) => {
+          try {
+            await interaction.editReply({ content: `🔄 Processing page ${page}/${total}...` })
+          } catch {}
+        })
       } else if ([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"].includes(ext)) {
         cleanedBuffer = await processImage(buffer, apiKey)
       } else {
@@ -142,26 +146,43 @@ async function processImage(buffer: Buffer, apiKey: string): Promise<Buffer> {
   return await sharp(resultBuffer).png().toBuffer()
 }
 
-async function processPDF(buffer: Buffer, apiKey: string): Promise<Buffer> {
+async function processPDF(
+  buffer: Buffer,
+  apiKey: string,
+  onProgress?: (page: number, total: number) => Promise<void>
+): Promise<Buffer> {
   const pngPages = await pdfToPng(buffer as unknown as ArrayBuffer, {
     disableFontFace: true,
     useSystemFonts: true,
-    viewportScale: 2.0,
+    viewportScale: 1.5,
   })
 
   if (!pngPages || pngPages.length === 0) throw new Error("PDF has no pages or failed to convert")
 
   console.log(`[Watermark Remover] PDF: ${pngPages.length} pages`)
 
+  // Process 2 pages at a time (LightPDF QPS limit is 2)
+  const processedImages: (Buffer | null)[] = new Array(pngPages.length).fill(null)
+
+  for (let i = 0; i < pngPages.length; i += 2) {
+    const batch = pngPages.slice(i, i + 2)
+    await onProgress?.(i + 1, pngPages.length)
+
+    const results = await Promise.all(
+      batch.map(async (page, j) => {
+        const idx = i + j
+        console.log(`[Watermark Remover] Page ${idx + 1}/${pngPages.length}...`)
+        if (!page.content || page.content.length === 0) return null
+        return processImage(Buffer.from(page.content), apiKey)
+      })
+    )
+    results.forEach((r, j) => { processedImages[i + j] = r })
+  }
+
   const newPdf = await PDFDocument.create()
 
-  for (let i = 0; i < pngPages.length; i++) {
-    console.log(`[Watermark Remover] Page ${i + 1}/${pngPages.length}...`)
-
-    const imageBuffer = pngPages[i].content
-    if (!imageBuffer || imageBuffer.length === 0) continue
-
-    const processedImage = await processImage(Buffer.from(imageBuffer), apiKey)
+  for (const processedImage of processedImages) {
+    if (!processedImage) continue
 
     const metadata = await sharp(processedImage).metadata()
     const w = metadata.width || 612
