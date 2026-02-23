@@ -125,17 +125,30 @@ async function removeWatermarkViaGemini(imageBuffer: Buffer, apiKey: string): Pr
   }
 
   const json = (await res.json()) as any
+  console.log("[Watermark Remover] Response keys:", JSON.stringify(Object.keys(json)))
 
   const msg = json.choices?.[0]?.message
-  const images = msg?.images
+  if (!msg) {
+    console.error("[Watermark Remover] Full response:", JSON.stringify(json).substring(0, 500))
+    throw new Error("Empty response from Gemini")
+  }
+
+  console.log("[Watermark Remover] Message keys:", Object.keys(msg), "has images:", !!msg.images)
+
+  const images = msg.images
   if (!images || images.length === 0) {
-    const textResponse = msg?.content || "No content"
-    console.error("[Watermark Remover] No images in response:", textResponse.substring(0, 300))
-    throw new Error(textResponse.length > 100 ? textResponse.substring(0, 100) + "..." : textResponse)
+    const textResponse = msg.content || ""
+    const finishReason = json.choices?.[0]?.finish_reason || "unknown"
+    console.error("[Watermark Remover] No images. finish_reason:", finishReason, "content:", textResponse.substring(0, 300))
+    if (textResponse.length > 5) {
+      throw new Error(textResponse.length > 100 ? textResponse.substring(0, 100) + "..." : textResponse)
+    }
+    throw new Error(`Gemini did not return an image (finish_reason: ${finishReason})`)
   }
 
   const dataUrl = images[0].image_url?.url || images[0].imageUrl?.url
   if (!dataUrl || !dataUrl.includes("base64,")) {
+    console.error("[Watermark Remover] Invalid image format:", JSON.stringify(images[0]).substring(0, 200))
     throw new Error("Gemini returned an invalid image format")
   }
 
@@ -148,8 +161,18 @@ async function processImage(buffer: Buffer, apiKey: string): Promise<Buffer> {
   const metadata = await sharp(buffer).metadata()
   console.log(`[Watermark Remover] Image: ${metadata.width}x${metadata.height}`)
 
-  const resultBuffer = await removeWatermarkViaGemini(buffer, apiKey)
-  return await sharp(resultBuffer).png().toBuffer()
+  let lastError: Error | null = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const resultBuffer = await removeWatermarkViaGemini(buffer, apiKey)
+      return await sharp(resultBuffer).png().toBuffer()
+    } catch (err: any) {
+      lastError = err
+      console.log(`[Watermark Remover] Attempt ${attempt + 1} failed: ${err.message?.substring(0, 100)}`)
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 2000))
+    }
+  }
+  throw lastError!
 }
 
 async function processPDF(
