@@ -4,9 +4,11 @@ import sharp from "sharp"
 import fetch from "node-fetch"
 import path from "path"
 import { pdfToPng } from "pdf-to-png-converter"
-import FormData from "form-data"
 
-const LIGHTPDF_API_BASE = "https://techhk.aoscdn.com/api/tasks/visual/external/watermark-remove"
+const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
+const MODEL = "google/gemini-2.5-flash-image-preview"
+
+const REMOVAL_PROMPT = `You are an image editor. The user has placed a decorative text pattern, overlay, or watermark on this image that they no longer want. Remove ALL semi-transparent text, logos, repeating patterns, seals, crests, and any overlay elements that appear to sit on top of the original content. Preserve the original image content underneath as cleanly as possible. Output ONLY the cleaned image with no text response.`
 
 export const watermarkremoverCommand = {
   data: new SlashCommandBuilder()
@@ -25,9 +27,9 @@ export const watermarkremoverCommand = {
         await interaction.deferReply()
       }
 
-      const apiKey = process.env.LIGHTPDF_API_KEY
+      const apiKey = process.env.OPENROUTER_API_KEY
       if (!apiKey) {
-        await interaction.editReply("❌ Watermark removal is not configured. Ask an admin to add `LIGHTPDF_API_KEY`.")
+        await interaction.editReply("❌ Watermark removal is not configured. Ask an admin to add `OPENROUTER_API_KEY`.")
         return
       }
 
@@ -51,16 +53,13 @@ export const watermarkremoverCommand = {
 
       if (ext === ".pdf") {
         await interaction.editReply({ content: `🔄 Converting PDF pages...` })
-        cleanedBuffer = await processPDF(buffer, apiKey, async (page, total, pass) => {
+        cleanedBuffer = await processPDF(buffer, apiKey, async (page, total) => {
           try {
-            await interaction.editReply({ content: `🔄 Page ${page}/${total} — pass ${pass}/2...` })
+            await interaction.editReply({ content: `🔄 Processing page ${page}/${total}...` })
           } catch {}
         })
       } else if ([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"].includes(ext)) {
-        await interaction.editReply({ content: `🔄 Removing watermark (pass 1/2)...` })
         cleanedBuffer = await processImage(buffer, apiKey)
-        await interaction.editReply({ content: `🔄 Cleaning up (pass 2/2)...` })
-        cleanedBuffer = await processImage(cleanedBuffer, apiKey)
       } else {
         await interaction.editReply({ content: `❌ Unsupported format: ${ext}. Use PDF, PNG, JPG, or WEBP.` })
         return
@@ -90,83 +89,68 @@ export const watermarkremoverCommand = {
   },
 }
 
-async function removeWatermarkViaLightPDF(imageBuffer: Buffer, apiKey: string): Promise<Buffer> {
+async function removeWatermarkViaGemini(imageBuffer: Buffer, apiKey: string): Promise<Buffer> {
   const pngBuffer = await sharp(imageBuffer).png().toBuffer()
+  const base64Image = `data:image/png;base64,${pngBuffer.toString("base64")}`
 
-  const form = new FormData()
-  form.append("file", pngBuffer, { filename: "image.png", contentType: "image/png" })
-  form.append("sync", "0")
+  console.log("[Watermark Remover] Sending to Gemini via OpenRouter...")
 
-  console.log("[Watermark Remover] Creating LightPDF task...")
-  const createRes = await fetch(LIGHTPDF_API_BASE, {
+  const res = await fetch(OPENROUTER_API, {
     method: "POST",
-    headers: { "X-API-KEY": apiKey },
-    body: form as any,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: REMOVAL_PROMPT },
+            { type: "image_url", image_url: { url: base64Image } },
+          ],
+        },
+      ],
+      modalities: ["image", "text"],
+    }),
   })
 
-  const createJson = (await createRes.json()) as any
-  if (createJson.status !== 200 || !createJson.data?.task_id) {
-    throw new Error(`LightPDF task creation failed: ${createJson.message || JSON.stringify(createJson)}`)
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(`OpenRouter API error ${res.status}: ${errText.substring(0, 200)}`)
   }
 
-  const taskId = createJson.data.task_id
-  console.log(`[Watermark Remover] Task created: ${taskId}, polling...`)
+  const json = (await res.json()) as any
 
-  for (let i = 0; i < 60; i++) {
-    await new Promise((r) => setTimeout(r, 1000))
-
-    const pollRes = await fetch(`${LIGHTPDF_API_BASE}/${taskId}`, {
-      headers: { "X-API-KEY": apiKey },
-    })
-    const pollJson = (await pollRes.json()) as any
-
-    if (pollJson.status !== 200) {
-      throw new Error(`LightPDF polling error: ${pollJson.message || JSON.stringify(pollJson)}`)
-    }
-
-    const { state } = pollJson.data
-    if (state === 1) {
-      const resultUrl = pollJson.data.file
-      if (!resultUrl) throw new Error("LightPDF returned no file URL")
-      console.log("[Watermark Remover] Done, downloading result...")
-      const resultRes = await fetch(resultUrl)
-      if (!resultRes.ok) throw new Error(`Failed to download result: ${resultRes.status}`)
-      return Buffer.from(await resultRes.arrayBuffer())
-    }
-    if (state < 0) {
-      throw new Error(`LightPDF processing failed (state: ${state})`)
-    }
+  const images = json.choices?.[0]?.message?.images
+  if (!images || images.length === 0) {
+    console.error("[Watermark Remover] No images in response:", JSON.stringify(json).substring(0, 300))
+    throw new Error("Gemini did not return an image")
   }
 
-  throw new Error("LightPDF processing timed out after 60s")
-}
+  const dataUrl = images[0].image_url?.url || images[0].imageUrl?.url
+  if (!dataUrl || !dataUrl.includes("base64,")) {
+    throw new Error("Gemini returned an invalid image format")
+  }
 
-/**
- * Pre-process image to boost watermark visibility for better AI detection.
- * Increases contrast of semi-transparent/light watermark elements.
- */
-async function enhanceForWatermarkDetection(buffer: Buffer): Promise<Buffer> {
-  return sharp(buffer)
-    .normalize()
-    .sharpen({ sigma: 1.5 })
-    .modulate({ brightness: 1.05, saturation: 1.2 })
-    .png()
-    .toBuffer()
+  const base64Data = dataUrl.split("base64,")[1]
+  console.log("[Watermark Remover] Got cleaned image from Gemini")
+  return Buffer.from(base64Data, "base64")
 }
 
 async function processImage(buffer: Buffer, apiKey: string): Promise<Buffer> {
   const metadata = await sharp(buffer).metadata()
   console.log(`[Watermark Remover] Image: ${metadata.width}x${metadata.height}`)
 
-  const enhanced = await enhanceForWatermarkDetection(buffer)
-  const resultBuffer = await removeWatermarkViaLightPDF(enhanced, apiKey)
+  const resultBuffer = await removeWatermarkViaGemini(buffer, apiKey)
   return await sharp(resultBuffer).png().toBuffer()
 }
 
 async function processPDF(
   buffer: Buffer,
   apiKey: string,
-  onProgress?: (page: number, total: number, pass: number) => Promise<void>
+  onProgress?: (page: number, total: number) => Promise<void>
 ): Promise<Buffer> {
   const pngPages = await pdfToPng(buffer as unknown as ArrayBuffer, {
     disableFontFace: true,
@@ -180,38 +164,14 @@ async function processPDF(
 
   const processedImages: (Buffer | null)[] = new Array(pngPages.length).fill(null)
 
-  // Pass 1: initial watermark removal
-  for (let i = 0; i < pngPages.length; i += 2) {
-    const batch = pngPages.slice(i, i + 2)
-    await onProgress?.(i + 1, pngPages.length, 1)
+  for (let i = 0; i < pngPages.length; i++) {
+    await onProgress?.(i + 1, pngPages.length)
+    console.log(`[Watermark Remover] Page ${i + 1}/${pngPages.length}...`)
 
-    const results = await Promise.all(
-      batch.map(async (page, j) => {
-        const idx = i + j
-        console.log(`[Watermark Remover] Pass 1 — Page ${idx + 1}/${pngPages.length}...`)
-        if (!page.content || page.content.length === 0) return null
-        return processImage(Buffer.from(page.content), apiKey)
-      })
-    )
-    results.forEach((r, j) => { processedImages[i + j] = r })
-  }
+    const imageBuffer = pngPages[i].content
+    if (!imageBuffer || imageBuffer.length === 0) continue
 
-  // Pass 2: clean up remaining artifacts
-  for (let i = 0; i < processedImages.length; i += 2) {
-    const batch = processedImages.slice(i, i + 2)
-    await onProgress?.(i + 1, pngPages.length, 2)
-
-    const results = await Promise.all(
-      batch.map(async (img, j) => {
-        const idx = i + j
-        if (!img) return null
-        console.log(`[Watermark Remover] Pass 2 — Page ${idx + 1}/${pngPages.length}...`)
-        return removeWatermarkViaLightPDF(img, apiKey)
-      })
-    )
-    results.forEach((r, j) => {
-      if (r) processedImages[i + j] = r
-    })
+    processedImages[i] = await processImage(Buffer.from(imageBuffer), apiKey)
   }
 
   const newPdf = await PDFDocument.create()
@@ -223,7 +183,7 @@ async function processPDF(
     const w = metadata.width || 612
     const h = metadata.height || 792
 
-    const pdfImage = await newPdf.embedPng(await sharp(processedImage).png().toBuffer())
+    const pdfImage = await newPdf.embedPng(processedImage)
     const page = newPdf.addPage([w / 2, h / 2])
     page.drawImage(pdfImage, { x: 0, y: 0, width: w / 2, height: h / 2 })
   }
