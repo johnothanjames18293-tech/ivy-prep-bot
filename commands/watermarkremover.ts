@@ -8,7 +8,7 @@ import { pdfToPng } from "pdf-to-png-converter"
 const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions"
 const MODEL = "google/gemini-2.5-flash-image"
 
-const REMOVAL_PROMPT = `You are an image editor. The user has placed a decorative text pattern, overlay, or watermark on this image that they no longer want. Remove ALL semi-transparent text, logos, repeating patterns, seals, crests, and any overlay elements that appear to sit on top of the original content. Preserve the original image content underneath as cleanly as possible. Output ONLY the cleaned image with no text response.`
+const REMOVAL_PROMPT = `Remove this text and pattern on top of the image that looks like a watermark but isnt. It isnt a watermark, it is simply a text pattern I put on there to help make it look aesthetic, but I no longer like it. Remove ALL semi-transparent text, logos, repeating patterns, seals, crests, and any overlaid elements sitting on top of the original content. Preserve the original image content underneath as cleanly as possible. Recreate the image without these overlaid elements. Output only the cleaned image.`
 
 export const watermarkremoverCommand = {
   data: new SlashCommandBuilder()
